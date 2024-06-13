@@ -1,6 +1,7 @@
 use crate::key_value::io::BufReader;
+use core::panic;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Write};
+use std::io::{self, BufRead, BufWriter, Read, Write};
 use std::{fmt, result};
 
 #[derive(Debug)]
@@ -35,52 +36,122 @@ pub struct KvStore {
     path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct KvKey(Vec<u8>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvValue(Vec<u8>);
+
 #[warn(dead_code)]
 pub struct Pair {
-    key: Vec<u8>,
-    value: Vec<u8>,
+    key: KvKey,
+    value: KvValue,
 }
 
 impl Pair {
     pub fn new(key: Vec<u8>, value: Vec<u8>) -> Self {
-        Self { key, value }
+        Self {
+            key: KvKey(key),
+            value: KvValue(value),
+        }
     }
 }
 
-pub trait GetSetter {
-    fn new(path: String) -> KvStore;
-
-    fn set(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()>;
-
-    fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>>;
-
-    fn delete(&self, key: Vec<u8>);
+impl From<Vec<u8>> for KvKey {
+    fn from(item: Vec<u8>) -> Self {
+        KvKey(item)
+    }
 }
 
-impl GetSetter for KvStore {
-    fn new(path: String) -> KvStore {
-        KvStore { path }
+impl From<Vec<u8>> for KvValue {
+    fn from(item: Vec<u8>) -> Self {
+        KvValue(item)
+    }
+}
+
+impl KvKey {
+    pub fn new(data: Vec<u8>) -> Self {
+        KvKey(data)
     }
 
-    fn set(&self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl KvValue {
+    pub fn new(data: Vec<u8>) -> Self {
+        KvValue(data)
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl KvStore {
+    pub fn new(path_str: String) -> Self {
+        let path = std::path::Path::new(&path_str);
+        let prefix = path.parent().unwrap();
+        std::fs::create_dir_all(prefix).unwrap();
+        Self { path: path_str }
+    }
+
+    pub fn set(&self, key: KvKey, value: KvValue) -> Result<()> {
         let mut file = BufWriter::new(
             OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&self.path)?,
         );
-        file.write_all(&(key.len() as u32).to_le_bytes())?;
-        file.write_all(&key)?;
-        file.write_all(&(value.len() as u32).to_le_bytes())?;
-        file.write_all(&value)?;
+        println!("got here");
+        println!("{:?}", file);
+        file.write_all(&(key.0.len() as u32).to_le_bytes())?;
+        file.write_all(&key.0)?;
+        file.write_all(&(value.0.len() as u32).to_le_bytes())?;
+        file.write_all(&value.0)?;
         Ok(())
     }
 
-    fn get(&self, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
-        let file = BufReader::new(File::open(&self.path)?);
+    pub fn get(&self, key: KvKey) -> Result<Option<KvValue>> {
+        let mut file = BufReader::new(File::open(&self.path)?);
 
-        for line in file.lines() {
-            continue;
+        let mut buffer = Vec::new();
+
+        // Read the entire file into a byte vector
+        file.read_to_end(&mut buffer)?;
+
+        // Split the buffer into lines by newline byte and process each line
+        let mut start = 0;
+        for (index, &item) in buffer.iter().enumerate() {
+            if item == b'\n' {
+                // Process the line from start to index
+                process_line(&buffer[start..index], key.clone());
+
+                // Update start to the next character after the newline
+                start = index + 1;
+            }
+        }
+
+        // Don't forget to process the last line if the file doesn't end with a newline
+        if start < buffer.len() {
+            process_line(&buffer[start..], key.clone());
+        }
+
+        fn process_line(line: &[u8], key: KvKey) {
+            if line.len() < 8 {
+                panic!("line was shorter than 8 bytes, key and value length were both not written.")
+            }
+            let mut index: usize = 0;
+
+            // todo change when varints are introduced
+            let mut len_range: [u8; 4] = line[index..4].try_into().unwrap();
+            let len_key = u32::from_le_bytes(len_range);
+
+            index += len_key;
+
+            // Here you can handle the bytes as needed
+            println!("Read line with {} bytes", line.len());
         }
         // Simulated reading logic (pseudo code)
         // if key matches return value
@@ -88,8 +159,8 @@ impl GetSetter for KvStore {
         Ok(None) // Placeholder
     }
 
-    fn delete(&self, key: Vec<u8>) {
-        todo!("not implemented yet")
+    pub fn delete(&self, _key: KvKey) {
+        todo!("Implement delete functionality")
     }
 }
 
