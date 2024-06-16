@@ -1,5 +1,4 @@
-use crate::key_value::io::BufReader;
-use core::panic;
+use io::BufReader;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Write};
 use std::{fmt, result, usize};
@@ -85,6 +84,30 @@ impl KvKey {
     }
 }
 
+impl fmt::Display for KvKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            match write!(f, "{:02x}", byte) {
+                Ok(_) => continue,
+                Err(e) => panic!("{}", e),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for KvValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            match write!(f, "{:02x}", byte) {
+                Ok(_) => continue,
+                Err(e) => panic!("{}", e),
+            }
+        }
+        Ok(())
+    }
+}
+
 impl KvValue {
     pub fn new(data: Vec<u8>) -> Self {
         KvValue(data)
@@ -110,8 +133,6 @@ impl KvStore {
                 .append(true)
                 .open(&self.path)?,
         );
-        println!("got here");
-        println!("{:?}", file);
         file.write_all(&(key.0.len() as u32).to_le_bytes())?;
         file.write_all(&key.0)?;
         file.write_all(&(value.0.len() as u32).to_le_bytes())?;
@@ -121,46 +142,7 @@ impl KvStore {
 
     pub fn get(&self, key: KvKey) -> Result<Option<Pair>> {
         let file = BufReader::new(File::open(&self.path)?);
-
-        // let mut buffer = Vec::new();
-
-        // Read the entire file into a byte vector
-        // file.read_to_end(&mut buffer)?;
-
         process_buffer(file, key)
-        // Split the buffer into lines by newline byte and process each line
-        // let mut start = 0;
-        // for (index, &item) in buffer.iter().enumerate() {
-        //     if item == b'\n' {
-        //         // Process the line from start to index
-        //         match process_line(&buffer[start..index], key.clone()) {
-        //             Ok(pair) => match pair {
-        //                 Some(pair_val) => return Ok(Some(pair_val)),
-        //                 None => (),
-        //             },
-        //             Err(e) => return Err(e),
-        //         }
-        //
-        //         // Update start to the next character after the newline
-        //         start = index + 1;
-        //     }
-        // }
-        //
-        // // Don't forget to process the last line if the file doesn't end with a newline
-        // if start < buffer.len() {
-        //     match process_line(&buffer[start..], key.clone()) {
-        //         Ok(pair) => match pair {
-        //             Some(pair_val) => return Ok(Some(pair_val)),
-        //             None => (),
-        //         },
-        //         Err(e) => return Err(e),
-        //     }
-        // }
-        //
-        // Simulated reading logic (pseudo code)
-        // if key matches return value
-        // else continue
-        // Ok(None) // Placeholder
     }
 
     pub fn _delete(&self, _key: KvKey) {
@@ -169,7 +151,6 @@ impl KvStore {
 }
 
 fn process_buffer(buf: BufReader<File>, key: KvKey) -> Result<Option<Pair>> {
-    println!("reading buffer");
     let mut index: usize = 0;
 
     let mut key_len: usize = 0;
@@ -182,10 +163,15 @@ fn process_buffer(buf: BufReader<File>, key: KvKey) -> Result<Option<Pair>> {
 
     let mut bytes_iter = buf.bytes();
 
+    // we use this to determine whether the a key was skipped due to no match. This only is
+    // relevant for the check outside of the loop for the last element. We initialise as true for
+    // the case that the buffer is empty or too short
+    let mut skipped: bool = true;
+
     while let Some(byte_result) = bytes_iter.next() {
         match byte_result {
             Ok(byte) => {
-                println!("{} - {:x}", index, byte);
+                // println!("{} - {:x}", index, byte);
                 match index {
                     // read the key length data || first 4 bytes
                     _ if index < 4 => key_length_byte_arr[index] = byte,
@@ -208,6 +194,7 @@ fn process_buffer(buf: BufReader<File>, key: KvKey) -> Result<Option<Pair>> {
                         // we compare against the key we are looking for. Then we can easily move
                         // forward in the iterator
                         if key != KvKey::new(key_data.clone()) {
+                            skipped = true;
                             index = 0;
                             key_length_byte_arr = [0u8; 8];
                             // -1 for the element we are currently processing
@@ -220,13 +207,14 @@ fn process_buffer(buf: BufReader<File>, key: KvKey) -> Result<Option<Pair>> {
                             bytes_iter.nth(value_len - 1 - 1);
                             continue;
                         }
+                        skipped = false;
                         value_data = Vec::with_capacity(value_len);
                         value_data.push(byte);
                     }
                     _ if 4 + key_len + 4 < index && index < 4 + key_len + 4 + value_len => {
                         value_data.push(byte)
                     }
-                    _ if 4 + key_len + 4 + value_len <= index => {
+                    _ if 4 + key_len + 4 + value_len == index => {
                         // we only reach this step if the key matched otherwise we willskip this
                         // step anyways
                         return Ok(Some(Pair::new(key_data, value_data)));
@@ -242,38 +230,86 @@ fn process_buffer(buf: BufReader<File>, key: KvKey) -> Result<Option<Pair>> {
             Err(e) => return Err(KvError::from(e)),
         }
     }
-
-    Ok(None)
-    // todo!()
+    if skipped {
+        Ok(None)
+    } else {
+        Ok(Some(Pair::new(key_data, value_data)))
+    }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn it_works() {
-//         let db = KvStore::new();
-//         let key = vec![1, 1, 1, 1];
-//         let value = vec![1, 2, 3, 4];
-//
-//         db.set(key.clone(), value.clone());
-//         assert_eq!(db.get(key.clone()), Some(value));
-//         db.delete(key.clone());
-//         assert_eq!(db.get(key), None);
-//     }
-//
-//     #[test]
-//     fn find_nothing() {
-//         let db = KvStore::new();
-//         let key = vec![1, 1, 1, 1];
-//         let value = vec![1, 2, 3, 4];
-//
-//         let key_to_try = vec![0, 0, 0, 0];
-//         db.set(key.clone(), value.clone());
-//         assert_ne!(db.get(key_to_try.clone()), Some(value.clone()));
-//         assert_eq!(db.get(key.clone()), Some(value.clone()));
-//         db.delete(key.clone());
-//         assert_eq!(db.get(key), None);
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_read_several_keys() {
+        let store = KvStore::new("/tmp/data-test/rlvldb-test".to_owned());
+
+        let key1 = KvKey::new(vec![1, 1]);
+        let key2 = KvKey::new(vec![0xaa]);
+        let key3 = KvKey::new(vec![12, 34]);
+        let key4 = KvKey::new(vec![1, 3]);
+
+        let val1 = KvValue::new(vec![81, 32]);
+        let val2 = KvValue::new(vec![16u8; 300]);
+        let val3 = KvValue::new(vec![255, 15]);
+        let val4 = KvValue::new(vec![0x77; 15]);
+
+        let result = store.set(key1.clone(), val1.clone());
+        match result {
+            Ok(_) => (),
+            Err(e) => panic!("{:?}", e),
+        }
+        let result = store.set(key2.clone(), val2.clone());
+        match result {
+            Ok(_) => (),
+            Err(e) => panic!("{:?}", e),
+        }
+        let result = store.set(key3.clone(), val3.clone());
+        match result {
+            Ok(_) => (),
+            Err(e) => panic!("{:?}", e),
+        }
+        let result = store.set(key4.clone(), val4.clone());
+        match result {
+            Ok(_) => (),
+            Err(e) => panic!("{:?}", e),
+        };
+
+        // get a key after a single key
+        validate_results_should_find(&store, &key3, &val3);
+        // get last key
+        validate_results_should_find(&store, &key4, &val4);
+        // just the first element
+        validate_results_should_find(&store, &key1, &val1);
+
+        // key not found should return None
+        let fake_key = KvKey::new(vec![255u8, 255u8, 255u8]);
+        match store.get(fake_key.clone()) {
+            Ok(Some(pair)) => {
+                println!("searched key: {}", fake_key);
+                println!("found key: {}", pair.key);
+                println!("found value: {}", pair.value);
+                panic!("nothing should have been found here")
+            }
+            Ok(None) => (), // do nothing we want None as result
+            Err(e) => panic!("Error retrieving value for key: {:?}", e),
+        };
+    }
+
+    #[test]
+    fn empty_db() {
+        todo!();
+    }
+
+    fn validate_results_should_find(store: &KvStore, key: &KvKey, target_val: &KvValue) {
+        match store.get(key.clone()) {
+            Ok(Some(pair)) => {
+                assert_eq!(pair.key, key.clone());
+                assert_eq!(pair.value, target_val.clone());
+            }
+            Ok(None) => panic!("No value found for key: {}", key),
+            Err(e) => panic!("Error retrieving value for key: {:?}", e),
+        };
+    }
+}
